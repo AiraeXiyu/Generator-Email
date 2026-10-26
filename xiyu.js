@@ -1,29 +1,5 @@
-/**
- * ge.js
- * Scrape By Emissary Xiyu
- * Generator.email scraper/provider
- *
- * Node.js >= 18
- *
- * Temuan yang dipakai:
- * - Homepage bootstrap + meta api-token
- * - GET /api/domains.php
- * - POST /dom_to_punycode.php
- * - POST /mark_remove.php
- * - POST /uptime.php
- * - GET /{domain}/{user} -> inbox context
- * - GET /inbox7/
- * - inbox_ctx cookie
- * - cur_user / cur_domain / cur_msg_id / num_mess
- * - data-mid message container
- * - WebSocket endpoint metadata
- *
- * Tidak mencoba melewati CAPTCHA / challenge.
- */
-
 const GE_BASE = 'https://generator.email';
-
-const DEFAULT_TIMEOUT = 15_000;
+const DEFAULT_TIMEOUT = 15000;
 
 const DEFAULT_HEADERS = {
   'User-Agent':
@@ -40,52 +16,20 @@ const DEFAULT_HEADERS = {
   Pragma: 'no-cache'
 };
 
-
-// ============================================================
-// ENDPOINT MAP
-// ============================================================
-
 const ENDPOINTS = Object.freeze({
   homepage: '/',
   inbox: '/inbox7/',
   domains: '/api/domains.php',
   punycode: '/dom_to_punycode.php',
-  markRemove: '/mark_remove.php',
-  uptime: '/uptime.php',
-  search: '/search.php',
-  websocket: '/notificon/ws'
+  uptime: '/uptime.php'
 });
 
-
-// ============================================================
-// BASIC HELPERS
-// ============================================================
+/* ============================================================
+   BASIC
+============================================================ */
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function randomString(length = 10) {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-
-  let out = '';
-
-  for (let i = 0; i < length; i++) {
-    out += chars[Math.floor(Math.random() * chars.length)];
-  }
-
-  return out;
-}
-
-function randomUsername(length = 10) {
-  let value = randomString(length);
-
-  // Lebih aman username diawali huruf.
-  if (!/^[a-z]/i.test(value)) {
-    value = 'a' + value.slice(1);
-  }
-
-  return value.toLowerCase();
 }
 
 function escapeRegex(value) {
@@ -123,22 +67,10 @@ function decodeHtml(value = '') {
     });
 }
 
-function stripTags(html = '') {
-  return decodeHtml(
-    String(html)
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p\s*>/gi, '\n')
-      .replace(/<\/div\s*>/gi, '\n')
-      .replace(/<\/li\s*>/gi, '\n')
-      .replace(/<[^>]+>/g, ' ')
-  );
-}
-
 function cleanText(value = '') {
   return String(value)
     .replace(/\r/g, '')
+    .replace(/\u00a0/g, ' ')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
     .replace(/[ \t]{2,}/g, ' ')
@@ -147,61 +79,65 @@ function cleanText(value = '') {
 }
 
 function htmlToText(html = '') {
-  return cleanText(stripTags(html));
+  return cleanText(
+    decodeHtml(
+      String(html)
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p\s*>/gi, '\n')
+        .replace(/<\/div\s*>/gi, '\n')
+        .replace(/<\/tr\s*>/gi, '\n')
+        .replace(/<\/li\s*>/gi, '\n')
+        .replace(/<\/h[1-6]\s*>/gi, '\n')
+        .replace(/<[^>]+>/g, ' ')
+    )
+  );
 }
 
 function getAttribute(tag, name) {
   if (!tag) return null;
 
-  const escaped = escapeRegex(name);
+  const key = escapeRegex(name);
 
   const patterns = [
-    new RegExp(`${escaped}\\s*=\\s*"([^"]*)"`, 'i'),
-    new RegExp(`${escaped}\\s*=\\s*'([^']*)'`, 'i'),
-    new RegExp(`${escaped}\\s*=\\s*([^\\s>]+)`, 'i')
+    new RegExp(`${key}\\s*=\\s*"([^"]*)"`, 'i'),
+    new RegExp(`${key}\\s*=\\s*'([^']*)'`, 'i'),
+    new RegExp(`${key}\\s*=\\s*([^\\s>]+)`, 'i')
   ];
 
   for (const pattern of patterns) {
     const match = String(tag).match(pattern);
-
-    if (match) {
-      return decodeHtml(match[1]);
-    }
+    if (match) return decodeHtml(match[1]);
   }
 
   return null;
 }
 
 function findElementById(html, id) {
-  const escaped = escapeRegex(id);
+  const key = escapeRegex(id);
 
   const regex = new RegExp(
-    `<([a-z0-9:-]+)\\b[^>]*\\bid\\s*=\\s*["']${escaped}["'][^>]*>`,
+    `<([a-z0-9:-]+)\\b[^>]*\\bid\\s*=\\s*["']${key}["'][^>]*>`,
     'i'
   );
 
-  const match = String(html).match(regex);
-
-  return match ? match[0] : null;
+  return String(html).match(regex)?.[0] || null;
 }
 
 function extractInputValue(html, id) {
-  const tag = findElementById(html, id);
-
-  if (!tag) return null;
-
-  return getAttribute(tag, 'value');
+  return getAttribute(findElementById(html, id), 'value');
 }
 
 function extractMeta(html, name) {
   const tags = String(html).match(/<meta\b[^>]*>/gi) || [];
 
   for (const tag of tags) {
-    const metaName = getAttribute(tag, 'name');
+    const currentName = getAttribute(tag, 'name');
 
     if (
-      metaName &&
-      metaName.toLowerCase() === String(name).toLowerCase()
+      currentName &&
+      currentName.toLowerCase() === String(name).toLowerCase()
     ) {
       return getAttribute(tag, 'content');
     }
@@ -228,39 +164,37 @@ function normalizeUser(user) {
 
 function splitEmail(email) {
   const value = String(email || '').trim().toLowerCase();
-
   const at = value.lastIndexOf('@');
 
   if (at <= 0 || at >= value.length - 1) {
     throw new Error('Email tidak valid');
   }
 
+  const user = normalizeUser(value.slice(0, at));
+  const domain = normalizeDomain(value.slice(at + 1));
+
+  if (!user || !domain) {
+    throw new Error('Email tidak valid');
+  }
+
   return {
-    user: normalizeUser(value.slice(0, at)),
-    domain: normalizeDomain(value.slice(at + 1))
+    user,
+    domain,
+    email: `${user}@${domain}`
   };
 }
 
-function buildEmail(user, domain) {
-  return `${normalizeUser(user)}@${normalizeDomain(domain)}`;
-}
-
 function buildMailboxURL(user, domain) {
-  return `${GE_BASE}/${encodeURIComponent(
-    normalizeDomain(domain)
-  )}/${encodeURIComponent(normalizeUser(user))}`;
+  return (
+    `${GE_BASE}/` +
+    `${encodeURIComponent(normalizeDomain(domain))}/` +
+    `${encodeURIComponent(normalizeUser(user))}`
+  );
 }
 
-function buildInboxCookie(user, domain) {
-  return `inbox_ctx=${encodeURIComponent(
-    `${normalizeDomain(domain)}/${normalizeUser(user)}`
-  )}`;
-}
-
-
-// ============================================================
-// COOKIE JAR
-// ============================================================
+/* ============================================================
+   COOKIE
+============================================================ */
 
 class CookieJar {
   constructor() {
@@ -269,22 +203,19 @@ class CookieJar {
 
   set(name, value) {
     if (!name) return;
-
     this.cookies.set(name, value);
-  }
-
-  get(name) {
-    return this.cookies.get(name);
   }
 
   parseSetCookie(header) {
     if (!header) return;
 
-    const chunks = splitSetCookieHeader(header);
+    const chunks = String(header)
+      .split(/,(?=\s*[A-Za-z0-9_.-]+=)/g)
+      .map(v => v.trim())
+      .filter(Boolean);
 
     for (const chunk of chunks) {
       const first = chunk.split(';')[0];
-
       const eq = first.indexOf('=');
 
       if (eq <= 0) continue;
@@ -292,9 +223,7 @@ class CookieJar {
       const name = first.slice(0, eq).trim();
       const value = first.slice(eq + 1).trim();
 
-      if (name) {
-        this.cookies.set(name, value);
-      }
+      if (name) this.cookies.set(name, value);
     }
   }
 
@@ -303,25 +232,11 @@ class CookieJar {
       .map(([key, value]) => `${key}=${value}`)
       .join('; ');
   }
-
-  toJSON() {
-    return Object.fromEntries(this.cookies.entries());
-  }
 }
 
-function splitSetCookieHeader(header) {
-  // fetch pada beberapa runtime menggabungkan Set-Cookie.
-  // Jangan split koma yang berada dalam Expires=...
-  return String(header)
-    .split(/,(?=\s*[A-Za-z0-9_.-]+=)/g)
-    .map(v => v.trim())
-    .filter(Boolean);
-}
-
-
-// ============================================================
-// HTTP
-// ============================================================
+/* ============================================================
+   REQUEST
+============================================================ */
 
 async function request(
   path,
@@ -334,7 +249,7 @@ async function request(
     jar
   } = {}
 ) {
-  const url = path.startsWith('http')
+  const url = /^https?:\/\//i.test(path)
     ? path
     : `${GE_BASE}${path.startsWith('/') ? path : '/' + path}`;
 
@@ -345,15 +260,14 @@ async function request(
 
   if (jar) {
     const cookie = jar.header();
-
-    if (cookie) {
-      requestHeaders.Cookie = cookie;
-    }
+    if (cookie) requestHeaders.Cookie = cookie;
   }
 
   const controller = new AbortController();
 
-  const timer = setTimeout(() => controller.abort(), timeout);
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeout);
 
   try {
     const response = await fetch(url, {
@@ -361,28 +275,18 @@ async function request(
       headers: requestHeaders,
       body,
       redirect,
-      signal: controller.signal
+      signal: controller.signal,
+      cache: 'no-store'
     });
 
     if (jar) {
-      let cookies = null;
-
-      // Node/undici baru.
-      if (
-        response.headers &&
-        typeof response.headers.getSetCookie === 'function'
-      ) {
-        const setCookies = response.headers.getSetCookie();
-
-        for (const item of setCookies) {
-          jar.parseSetCookie(item);
+      if (typeof response.headers.getSetCookie === 'function') {
+        for (const cookie of response.headers.getSetCookie()) {
+          jar.parseSetCookie(cookie);
         }
       } else {
-        cookies = response.headers.get('set-cookie');
-
-        if (cookies) {
-          jar.parseSetCookie(cookies);
-        }
+        const cookie = response.headers.get('set-cookie');
+        if (cookie) jar.parseSetCookie(cookie);
       }
     }
 
@@ -393,12 +297,11 @@ async function request(
       status: response.status,
       statusText: response.statusText,
       url: response.url,
-      headers: response.headers,
       text
     };
   } catch (error) {
     if (error?.name === 'AbortError') {
-      throw new Error(`Request timeout: ${url}`);
+      throw new Error('Generator.email request timeout');
     }
 
     throw error;
@@ -407,425 +310,41 @@ async function request(
   }
 }
 
-async function postForm(path, data, options = {}) {
-  const body = new URLSearchParams();
-
-  for (const [key, value] of Object.entries(data || {})) {
-    if (value !== undefined && value !== null) {
-      body.set(key, String(value));
-    }
-  }
-
-  return request(path, {
-    ...options,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'X-Requested-With': 'XMLHttpRequest',
-      ...(options.headers || {})
-    },
-    body: body.toString()
-  });
-}
-
-
-// ============================================================
-// HOMEPAGE / BOOTSTRAP
-// ============================================================
-
-function parseBootstrap(html) {
-  const apiToken = extractMeta(html, 'api-token');
-
-  const user =
-    extractInputValue(html, 'userName') ||
-    extractJSString(html, 'cur_user');
-
-  const domain =
-    extractInputValue(html, 'domainName2') ||
-    extractJSString(html, 'cur_domain');
-
-  const domainAscii =
-    extractJSString(html, 'cur_domain_ascii') ||
-    domain;
-
-  const state = parseInboxState(html);
-
-  return {
-    apiToken,
-    user: user || null,
-    domain: domain || null,
-    domainAscii: domainAscii || null,
-    state
-  };
-}
-
-async function bootstrap(options = {}) {
-  const jar = options.jar || new CookieJar();
-
-  const response = await request('/', {
-    jar,
-    timeout: options.timeout
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Generator.email homepage HTTP ${response.status}`
-    );
-  }
-
-  const parsed = parseBootstrap(response.text);
-
-  return {
-    status: response.status,
-    url: response.url,
-    html: response.text,
-    jar,
-    ...parsed
-  };
-}
-
-
-// ============================================================
-// DOMAIN API
-// ============================================================
-
-function parseDomainsPayload(text) {
-  let data;
-
-  try {
-    data = JSON.parse(text);
-  } catch {
-    return [];
-  }
-
-  let candidates = [];
-
-  if (Array.isArray(data)) {
-    candidates = data;
-  } else if (Array.isArray(data?.domains)) {
-    candidates = data.domains;
-  } else if (Array.isArray(data?.data)) {
-    candidates = data.data;
-  } else if (Array.isArray(data?.result)) {
-    candidates = data.result;
-  }
-
-  const domains = [];
-
-  for (const item of candidates) {
-    let value = null;
-
-    if (typeof item === 'string') {
-      value = item;
-    } else if (item && typeof item === 'object') {
-      value =
-        item.domain ||
-        item.name ||
-        item.value ||
-        item.host ||
-        null;
-    }
-
-    value = normalizeDomain(value);
-
-    if (
-      value &&
-      /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(value) &&
-      !domains.includes(value)
-    ) {
-      domains.push(value);
-    }
-  }
-
-  return domains;
-}
-
-async function getDomains(options = {}) {
-  const session =
-    options.session ||
-    await bootstrap({
-      timeout: options.timeout
-    });
-
-  if (!session.apiToken) {
-    throw new Error(
-      'api-token tidak ditemukan dari homepage'
-    );
-  }
-
-  const response = await request(ENDPOINTS.domains, {
-    jar: session.jar,
-    timeout: options.timeout,
-    headers: {
-      Accept: 'application/json, text/plain, */*',
-      'X-API-Token': session.apiToken,
-      'X-Requested-With': 'XMLHttpRequest',
-      Referer: `${GE_BASE}/`
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Domains API HTTP ${response.status}`
-    );
-  }
-
-  return {
-    domains: parseDomainsPayload(response.text),
-    raw: response.text,
-    apiToken: session.apiToken,
-    jar: session.jar
-  };
-}
-
-
-// ============================================================
-// ADDRESS HELPERS / DISCOVERED ENDPOINTS
-// ============================================================
-
-async function domainToPunycode(domain, options = {}) {
-  const response = await postForm(
-    ENDPOINTS.punycode,
-    {
-      dmn: normalizeDomain(domain)
-    },
-    {
-      jar: options.jar,
-      timeout: options.timeout,
-      headers: {
-        Referer: `${GE_BASE}/`
-      }
-    }
-  );
-
-  return {
-    status: response.status,
-    ok: response.ok,
-    text: response.text
-  };
-}
-
-async function markMailbox(email, options = {}) {
-  const { user, domain } = splitEmail(email);
-
-  const response = await postForm(
-    ENDPOINTS.markRemove,
-    {
-      chekinbox: `${user}@${domain}`
-    },
-    {
-      jar: options.jar,
-      timeout: options.timeout,
-      headers: {
-        Referer: `${GE_BASE}/`
-      }
-    }
-  );
-
-  return {
-    status: response.status,
-    ok: response.ok,
-    text: response.text
-  };
-}
-
-async function checkUptime(user, domain, options = {}) {
-  const response = await postForm(
-    ENDPOINTS.uptime,
-    {
-      dmn: normalizeDomain(domain),
-      usr: normalizeUser(user)
-    },
-    {
-      jar: options.jar,
-      timeout: options.timeout,
-      headers: {
-        Referer: `${GE_BASE}/`
-      }
-    }
-  );
-
-  return {
-    status: response.status,
-    ok: response.ok,
-    text: response.text
-  };
-}
-
-
-// ============================================================
-// MAILBOX GENERATION
-// ============================================================
-
-function parseGeneratedMailbox(html) {
-  const user =
-    extractInputValue(html, 'userName') ||
-    extractJSString(html, 'cur_user');
-
-  const domain =
-    extractInputValue(html, 'domainName2') ||
-    extractJSString(html, 'cur_domain');
-
-  if (!user || !domain) {
-    return null;
-  }
-
-  return {
-    user: normalizeUser(user),
-    domain: normalizeDomain(domain),
-    email: buildEmail(user, domain)
-  };
-}
-
-/**
- * Generator.email sendiri menghasilkan mailbox ketika halaman
- * inbox/homepage dimuat.
- */
-async function generateMailbox(options = {}) {
-  const jar = options.jar || new CookieJar();
-
-  const response = await request('/', {
-    jar,
-    timeout: options.timeout,
-    headers: {
-      Referer: `${GE_BASE}/`
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Generate mailbox HTTP ${response.status}`
-    );
-  }
-
-  const mailbox = parseGeneratedMailbox(response.text);
-
-  if (!mailbox) {
-    throw new Error(
-      'Mailbox Generator.email tidak ditemukan di HTML'
-    );
-  }
-
-  return {
-    ...mailbox,
-    mailboxUrl: buildMailboxURL(
-      mailbox.user,
-      mailbox.domain
-    ),
-    apiToken: extractMeta(response.text, 'api-token'),
-    jar,
-    html: options.includeHtml ? response.text : undefined
-  };
-}
-
-
-// ============================================================
-// OPEN EXISTING MAILBOX
-// ============================================================
-
-async function openMailbox(user, domain, options = {}) {
-  user = normalizeUser(user);
-  domain = normalizeDomain(domain);
-
-  if (!user || !domain) {
-    throw new Error('User/domain mailbox tidak valid');
-  }
-
-  const jar = options.jar || new CookieJar();
-
-  // Generator.email memakai inbox_ctx.
-  jar.set(
-    'inbox_ctx',
-    encodeURIComponent(`${domain}/${user}`)
-  );
-
-  const mailboxPath =
-    `/${encodeURIComponent(domain)}/${encodeURIComponent(user)}`;
-
-  const response = await request(mailboxPath, {
-    jar,
-    timeout: options.timeout,
-    redirect: 'follow',
-    headers: {
-      Referer: `${GE_BASE}/`
-    }
-  });
-
-  return {
-    ok: response.ok,
-    status: response.status,
-    url: response.url,
-    user,
-    domain,
-    email: `${user}@${domain}`,
-    mailboxUrl: buildMailboxURL(user, domain),
-    jar,
-    html: options.includeHtml ? response.text : undefined
-  };
-}
-
-
-// ============================================================
-// INBOX STATE
-// ============================================================
+/* ============================================================
+   GENERATOR STATE
+============================================================ */
 
 function extractJSString(html, key) {
-  const escaped = escapeRegex(key);
+  const k = escapeRegex(key);
 
   const patterns = [
-    new RegExp(
-      `${escaped}\\s*:\\s*"([^"]*)"`,
-      'i'
-    ),
-
-    new RegExp(
-      `${escaped}\\s*:\\s*'([^']*)'`,
-      'i'
-    ),
-
-    new RegExp(
-      `["']${escaped}["']\\s*:\\s*"([^"]*)"`,
-      'i'
-    ),
-
-    new RegExp(
-      `["']${escaped}["']\\s*:\\s*'([^']*)'`,
-      'i'
-    )
+    new RegExp(`${k}\\s*:\\s*"([^"]*)"`, 'i'),
+    new RegExp(`${k}\\s*:\\s*'([^']*)'`, 'i'),
+    new RegExp(`["']${k}["']\\s*:\\s*"([^"]*)"`, 'i'),
+    new RegExp(`["']${k}["']\\s*:\\s*'([^']*)'`, 'i')
   ];
 
   for (const pattern of patterns) {
     const match = String(html).match(pattern);
 
-    if (match) {
-      return decodeHtml(match[1]);
-    }
+    if (match) return decodeHtml(match[1]);
   }
 
   return null;
 }
 
 function extractJSNumber(html, key) {
-  const escaped = escapeRegex(key);
+  const k = escapeRegex(key);
 
   const patterns = [
-    new RegExp(
-      `${escaped}\\s*:\\s*(\\d+)`,
-      'i'
-    ),
-
-    new RegExp(
-      `["']${escaped}["']\\s*:\\s*(\\d+)`,
-      'i'
-    )
+    new RegExp(`${k}\\s*:\\s*(\\d+)`, 'i'),
+    new RegExp(`["']${k}["']\\s*:\\s*(\\d+)`, 'i')
   ];
 
   for (const pattern of patterns) {
     const match = String(html).match(pattern);
 
-    if (match) {
-      return Number(match[1]);
-    }
+    if (match) return Number(match[1]);
   }
 
   return null;
@@ -834,9 +353,13 @@ function extractJSNumber(html, key) {
 function parseInboxState(html) {
   return {
     user: extractJSString(html, 'cur_user'),
+
     domain: extractJSString(html, 'cur_domain'),
-    domainAscii:
-      extractJSString(html, 'cur_domain_ascii'),
+
+    domainAscii: extractJSString(
+      html,
+      'cur_domain_ascii'
+    ),
 
     messageId:
       extractJSString(html, 'cur_msg_id') ||
@@ -851,115 +374,366 @@ function parseInboxState(html) {
   };
 }
 
+/* ============================================================
+   GENERATE PARSER
+============================================================ */
 
-// ============================================================
-// MESSAGE CONTAINERS
-// ============================================================
+function parseGeneratedMailbox(html) {
+  const user =
+    extractInputValue(html, 'userName') ||
+    extractJSString(html, 'cur_user');
 
-function findMessageIds(html) {
-  const ids = [];
+  const domain =
+    extractInputValue(html, 'domainName2') ||
+    extractJSString(html, 'cur_domain');
 
-  const regex =
-    /data-mid\s*=\s*["']([^"']+)["']/gi;
+  if (!user || !domain) return null;
 
-  let match;
+  const normalizedUser = normalizeUser(user);
+  const normalizedDomain = normalizeDomain(domain);
 
-  while ((match = regex.exec(String(html)))) {
-    const id = decodeHtml(match[1]).trim();
-
-    if (id && !ids.includes(id)) {
-      ids.push(id);
-    }
+  if (!normalizedUser || !normalizedDomain) {
+    return null;
   }
 
-  return ids;
+  return {
+    user: normalizedUser,
+    domain: normalizedDomain,
+    email: `${normalizedUser}@${normalizedDomain}`
+  };
 }
 
-function extractBalancedDiv(html, startIndex) {
-  const source = String(html);
+/* ============================================================
+   HTML CONTAINER HELPERS
+============================================================ */
 
-  const tokenRegex = /<\/?div\b[^>]*>/gi;
+function extractBalancedElementAt(html, startIndex, tagName = 'div') {
+  const source = String(html || '');
 
-  tokenRegex.lastIndex = startIndex;
+  const openRegex = new RegExp(`<${tagName}\\b[^>]*>`, 'i');
+  const first = openRegex.exec(source.slice(startIndex));
 
-  let depth = 0;
-  let started = false;
+  if (!first) return null;
+
+  const realStart = startIndex + first.index;
+  const contentStart = realStart + first[0].length;
+
+  const tags = new RegExp(`</?${tagName}\\b[^>]*>`, 'gi');
+  tags.lastIndex = contentStart;
+
+  let depth = 1;
   let match;
 
-  while ((match = tokenRegex.exec(source))) {
-    const tag = match[0];
-
-    if (!started) {
-      if (!/^<div\b/i.test(tag)) {
-        continue;
-      }
-
-      started = true;
-      depth = 1;
-      continue;
-    }
-
-    if (/^<div\b/i.test(tag)) {
+  while ((match = tags.exec(source))) {
+    if (new RegExp(`^<${tagName}\\b`, 'i').test(match[0])) {
       depth++;
     } else {
       depth--;
     }
 
     if (depth === 0) {
-      return source.slice(
-        startIndex,
-        tokenRegex.lastIndex
-      );
+      return {
+        start: realStart,
+        end: tags.lastIndex,
+        outer: source.slice(realStart, tags.lastIndex),
+        inner: source.slice(contentStart, match.index)
+      };
     }
   }
 
-  return source.slice(startIndex);
+  return {
+    start: realStart,
+    end: source.length,
+    outer: source.slice(realStart),
+    inner: source.slice(contentStart)
+  };
 }
 
-function findMessageContainer(html, messageId) {
-  if (!messageId) return null;
+function extractDivInnerHTMLByClass(html, className) {
+  const source = String(html || '');
+  const escaped = escapeRegex(className);
 
-  const escaped = escapeRegex(messageId);
-
-  const regex = new RegExp(
-    `<div\\b[^>]*data-mid\\s*=\\s*["']${escaped}["'][^>]*>`,
+  const opener = new RegExp(
+    `<div\\b[^>]*class=["'][^"']*\\b${escaped}\\b[^"']*["'][^>]*>`,
     'i'
   );
 
-  const match = regex.exec(String(html));
+  const found = opener.exec(source);
 
-  if (!match) return null;
+  if (!found) return null;
 
-  return extractBalancedDiv(html, match.index);
+  return extractBalancedElementAt(
+    source,
+    found.index,
+    'div'
+  )?.inner || null;
 }
 
+function extractDivInnerHTMLById(html, id) {
+  const source = String(html || '');
+  const escaped = escapeRegex(id);
 
-// ============================================================
-// MESSAGE PARSER
-// ============================================================
+  const opener = new RegExp(
+    `<div\\b[^>]*id=["']${escaped}["'][^>]*>`,
+    'i'
+  );
 
-function extractHeaderByLabel(html, label) {
-  const text = String(html);
+  const found = opener.exec(source);
 
-  const escaped = escapeRegex(label);
+  if (!found) return null;
+
+  return extractBalancedElementAt(
+    source,
+    found.index,
+    'div'
+  )?.inner || null;
+}
+
+function extractClassContent(html, className) {
+  const div = extractDivInnerHTMLByClass(
+    html,
+    className
+  );
+
+  if (div !== null) return div;
+
+  const escaped = escapeRegex(className);
+
+  const regex = new RegExp(
+    `<([a-z0-9]+)\\b[^>]*class=["'][^"']*\\b${escaped}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/\\1>`,
+    'i'
+  );
+
+  return String(html).match(regex)?.[2] || null;
+}
+
+/* ============================================================
+   MESSAGE IDS
+============================================================ */
+
+function parseMessageList(html, mailboxEmail = null) {
+  const source = String(html || '');
+  const entries = [];
+  const seen = new Set();
+
+  const regex =
+    /loadInboxClientSide\s*\(\s*['"]([^'"]+)['"]\s*\)/gi;
+
+  let match;
+
+  while ((match = regex.exec(source))) {
+    const path = decodeHtml(match[1]).trim();
+
+    if (!path || seen.has(path)) continue;
+
+    const parts =
+      path.split('/').filter(Boolean);
+
+    if (parts.length < 3) continue;
+
+    const domain =
+      normalizeDomain(parts[0]);
+
+    const user =
+      normalizeUser(parts[1]);
+
+    const id =
+      parts.slice(2).join('/').trim();
+
+    if (!domain || !user || !id) continue;
+
+    seen.add(path);
+
+    const position = match.index;
+
+    const start =
+      Math.max(
+        0,
+        source.lastIndexOf(
+          '<div',
+          position
+        )
+      );
+
+    const block =
+      extractBalancedElementAt(
+        source,
+        start,
+        'div'
+      );
+
+    const blockHtml =
+      block?.outer ||
+      source.slice(
+        Math.max(0, position - 3000),
+        Math.min(source.length, position + 5000)
+      );
+
+    const fromRaw =
+      extractClassContent(
+        blockHtml,
+        'from_div_45g45gg'
+      );
+
+    const subjectRaw =
+      extractClassContent(
+        blockHtml,
+        'subj_div_45g45gg'
+      );
+
+    const timeRaw =
+      extractClassContent(
+        blockHtml,
+        'time_div_45g45gg'
+      );
+
+    entries.push({
+      id,
+      path: `${domain}/${user}/${id}`,
+      user,
+      domain,
+      email:
+        mailboxEmail ||
+        `${user}@${domain}`,
+      from:
+        fromRaw
+          ? htmlToText(fromRaw)
+          : null,
+      to:
+        mailboxEmail ||
+        `${user}@${domain}`,
+      subject:
+        subjectRaw
+          ? htmlToText(subjectRaw)
+          : null,
+      time:
+        timeRaw
+          ? htmlToText(timeRaw)
+          : null,
+      body: null,
+      html: null,
+      links: []
+    });
+  }
+
+  return entries;
+}
+
+function findMessageIds(html) {
+  return parseMessageList(html)
+    .map(item => item.id);
+}
+
+/* ============================================================
+   SINGLE MESSAGE PARSERS
+============================================================ */
+
+function extractSummaryHead(html) {
+  return (
+    extractDivInnerHTMLById(
+      html,
+      'mail-summary-head'
+    ) || null
+  );
+}
+
+function extractSummaryBody(html) {
+  return (
+    extractDivInnerHTMLById(
+      html,
+      'mail-summary-body'
+    ) || null
+  );
+}
+
+function extractActualFrom(html) {
+  const summary = extractSummaryHead(html);
+
+  if (summary) {
+    const raw = extractClassContent(
+      summary,
+      'from_div_45g45gg'
+    );
+
+    if (raw) {
+      const value = htmlToText(raw);
+      if (value) return value;
+    }
+  }
+
+  const detail =
+    extractSummaryBody(html) ||
+    String(html);
 
   const patterns = [
-    new RegExp(
-      `${escaped}\\s*:\\s*<[^>]*>([\\s\\S]*?)<\\/[^>]+>`,
-      'i'
-    ),
+    /<span\b[^>]*>\s*From:\s*<\/span>\s*<span\b[^>]*>([\s\S]*?)<\/span>/i,
 
-    new RegExp(
-      `${escaped}\\s*:\\s*([^<\\r\\n]+)`,
-      'i'
-    )
+    /<span\b[^>]*class=["'][^"']*\bwbreak\b[^"']*["'][^>]*>\s*From:\s*<\/span>\s*<span\b[^>]*>([\s\S]*?)<\/span>/i
   ];
 
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    const match = detail.match(pattern);
 
-    if (match) {
-      const value = cleanText(htmlToText(match[1]));
+    if (match?.[1]) {
+      const value = htmlToText(match[1]);
+      if (value) return value;
+    }
+  }
+
+  return null;
+}
+
+function extractActualTo(
+  html,
+  fallbackEmail = null
+) {
+  const detail =
+    extractSummaryBody(html) ||
+    String(html);
+
+  const patterns = [
+    /<span\b[^>]*>\s*To:\s*<\/span>\s*<span\b[^>]*>([\s\S]*?)<\/span>/i,
+
+    /<span\b[^>]*>\s*To:\s*<\/span>\s*<span\b[^>]*class=["'][^"']*\bwbreak\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = detail.match(pattern);
+
+    if (match?.[1]) {
+      const value = htmlToText(match[1]);
+      if (value) return value;
+    }
+  }
+
+  return fallbackEmail || null;
+}
+
+function extractActualSubject(html) {
+  const detail =
+    extractSummaryBody(html) ||
+    String(html);
+
+  const h1 = detail.match(
+    /<h1\b[^>]*class=["'][^"']*\bsubj-h1\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i
+  );
+
+  if (h1?.[1]) {
+    const value = htmlToText(h1[1]);
+
+    if (value) return value;
+  }
+
+  const summary = extractSummaryHead(html);
+
+  if (summary) {
+    const raw = extractClassContent(
+      summary,
+      'subj_div_45g45gg'
+    );
+
+    if (raw) {
+      const value = htmlToText(raw);
 
       if (value) return value;
     }
@@ -968,46 +742,39 @@ function extractHeaderByLabel(html, label) {
   return null;
 }
 
-function extractEmailAfterLabel(text, label) {
-  const escaped = escapeRegex(label);
-
-  const regex = new RegExp(
-    `${escaped}\\s*:?\\s*([^\\n<]{0,200})`,
-    'i'
+function extractMessageBodyHTML(html) {
+  return (
+    extractDivInnerHTMLByClass(
+      html,
+      'mess_bodiyy'
+    ) || null
   );
-
-  const match = String(text).match(regex);
-
-  if (!match) return null;
-
-  const email = match[1].match(
-    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
-  );
-
-  return email ? email[0] : cleanText(match[1]);
 }
 
-function extractClassBlock(html, classNames) {
-  for (const className of classNames) {
-    const escaped = escapeRegex(className);
+function extractActualBody(html) {
+  const bodyHTML = extractMessageBodyHTML(html);
 
-    const regex = new RegExp(
-      `<([a-z0-9]+)\\b[^>]*class\\s*=\\s*["'][^"']*\\b${escaped}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/\\1>`,
-      'i'
-    );
-
-    const match = String(html).match(regex);
-
-    if (match) {
-      return match[2];
-    }
+  if (!bodyHTML) {
+    return {
+      html: null,
+      text: null
+    };
   }
 
-  return null;
+  return {
+    html: bodyHTML,
+    text: htmlToText(bodyHTML) || null
+  };
 }
+
+/* ============================================================
+   LINKS
+============================================================ */
 
 function extractLinks(html) {
   const links = [];
+
+  if (!html) return links;
 
   const hrefRegex =
     /href\s*=\s*["']([^"']+)["']/gi;
@@ -1020,35 +787,41 @@ function extractLinks(html) {
     if (!url) continue;
 
     if (
-      url.startsWith('#') ||
       /^javascript:/i.test(url) ||
       /^mailto:/i.test(url) ||
-      /^tel:/i.test(url)
+      /^tel:/i.test(url) ||
+      /^data:/i.test(url) ||
+      url.startsWith('#')
     ) {
       continue;
     }
 
     if (url.startsWith('//')) {
-      url = 'https:' + url;
+      url = `https:${url}`;
     }
 
-    if (/^https?:\/\//i.test(url)) {
-      if (!links.includes(url)) {
-        links.push(url);
-      }
+    if (
+      /^https?:\/\//i.test(url) &&
+      !links.includes(url)
+    ) {
+      links.push(url);
     }
   }
 
-  // Plain-text URLs.
-  const textUrls =
-    String(html).match(/https?:\/\/[^\s"'<>]+/gi) || [];
+  const plain =
+    htmlToText(html).match(
+      /https?:\/\/[^\s<>"']+/gi
+    ) || [];
 
-  for (let url of textUrls) {
-    url = decodeHtml(url)
+  for (let url of plain) {
+    url = url
       .replace(/[),.;]+$/, '')
       .trim();
 
-    if (url && !links.includes(url)) {
+    if (
+      /^https?:\/\//i.test(url) &&
+      !links.includes(url)
+    ) {
       links.push(url);
     }
   }
@@ -1056,140 +829,632 @@ function extractLinks(html) {
   return links;
 }
 
-function extractMessageBody(container) {
-  if (!container) return null;
+/* ============================================================
+   SAFE HTML
+============================================================ */
 
-  const bodyHtml = extractClassBlock(
-    container,
-    [
-      'mailbody',
-      'mail-body',
-      'message-body',
-      'mailtext'
-    ]
+function sanitizeEmailHtml(html) {
+  if (!html) return null;
+
+  let safe = String(html);
+
+  safe = safe
+    .replace(
+      /<(script|iframe|object|embed|form|input|button|textarea|select|meta|base)\b[^>]*>[\s\S]*?<\/\1>/gi,
+      ''
+    )
+    .replace(
+      /<(script|iframe|object|embed|form|input|button|textarea|select|meta|base)\b[^>]*\/?>/gi,
+      ''
+    );
+
+  safe = safe.replace(
+    /\s(on[a-z]+)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+    ''
   );
 
-  if (bodyHtml) {
-    const value = htmlToText(bodyHtml);
+  safe = safe.replace(
+    /\shref\s*=\s*(["'])\s*(?:javascript|data|vbscript):[\s\S]*?\1/gi,
+    ' href="#"'
+  );
 
-    return value || null;
+  safe = safe.replace(
+    /\ssrc\s*=\s*(["'])\s*(?:javascript|vbscript):[\s\S]*?\1/gi,
+    ''
+  );
+
+  safe = safe.replace(
+    /<a\b([^>]*)>/gi,
+    (full, attrs) => {
+      let cleaned = attrs
+        .replace(/\starget\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+        .replace(/\srel\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+
+      return `<a${cleaned} target="_blank" rel="noopener noreferrer nofollow">`;
+    }
+  );
+
+  return safe;
+}
+
+/* ============================================================
+   MULTI MESSAGE PARSER
+============================================================ */
+
+function findMessageBlocks(html) {
+  const source = String(html || '');
+  const positions = [];
+
+  const regex =
+    /<div\b[^>]*id=["']mail-summary-head["'][^>]*>/gi;
+
+  let match;
+
+  while ((match = regex.exec(source))) {
+    positions.push(match.index);
   }
 
-  /*
-   * Penting:
-   * jangan fallback ke seluruh /inbox7/ HTML.
-   * Itu bug yang dulu menyebabkan seluruh halaman
-   * Generator.email dianggap sebagai isi email.
-   */
+  if (positions.length === 0) {
+    return [];
+  }
+
+  const blocks = [];
+
+  for (let i = 0; i < positions.length; i++) {
+    const start = positions[i];
+
+    const end =
+      i + 1 < positions.length
+        ? positions[i + 1]
+        : source.length;
+
+    blocks.push(
+      source.slice(start, end)
+    );
+  }
+
+  return blocks;
+}
+
+function findNearbyMessageId(block, fullHtml, index) {
+  const ownIds = findMessageIds(block);
+
+  if (ownIds.length) {
+    return ownIds[0];
+  }
+
+  const source = String(fullHtml || '');
+
+  const blockIndex =
+    typeof index === 'number'
+      ? index
+      : source.indexOf(block);
+
+  if (blockIndex >= 0) {
+    const before = source.slice(
+      Math.max(0, blockIndex - 8000),
+      blockIndex
+    );
+
+    const ids = findMessageIds(before);
+
+    if (ids.length) {
+      return ids[ids.length - 1];
+    }
+  }
 
   return null;
 }
 
-function parseMessage(html, state = parseInboxState(html)) {
-  if (!state.messageCount || state.messageCount <= 0) {
-    return {
-      id: null,
-      from: null,
-      to: null,
-      subject: null,
-      body: null,
-      links: []
-    };
+function parseMessageBlock(
+  block,
+  {
+    id = null,
+    mailboxEmail = null
+  } = {}
+) {
+  const from = extractActualFrom(block);
+
+  const to = extractActualTo(
+    block,
+    mailboxEmail
+  );
+
+  const subject =
+    extractActualSubject(block);
+
+  const parsedBody =
+    extractActualBody(block);
+
+  const rawHtml =
+    parsedBody.html || null;
+
+  const safeHtml =
+    sanitizeEmailHtml(rawHtml);
+
+  const links =
+    rawHtml
+      ? extractLinks(rawHtml)
+      : [];
+
+  return {
+    id,
+    from: from || null,
+    to: to || mailboxEmail || null,
+    subject: subject || null,
+    body: parsedBody.text || null,
+    html: safeHtml,
+    links
+  };
+}
+
+function parseMessages(
+  html,
+  mailboxEmail = null
+) {
+  const source = String(html || '');
+  const state = parseInboxState(source);
+
+  if (!state.messageCount) {
+    return [];
   }
 
-  const ids = findMessageIds(html);
+  const blocks =
+    findMessageBlocks(source);
 
-  const messageId =
-    state.messageId ||
-    state.messageIdRaw ||
-    ids[0] ||
-    null;
+  const allIds =
+    findMessageIds(source);
 
-  if (!messageId) {
-    return {
-      id: null,
-      from: null,
-      to: null,
-      subject: null,
-      body: null,
-      links: []
-    };
-  }
+  const messages = [];
 
-  const container =
-    findMessageContainer(html, messageId);
+  if (blocks.length > 0) {
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
 
-  if (!container) {
-    return {
-      id: messageId,
-      from: null,
-      to: null,
-      subject: null,
-      body: null,
-      links: []
-    };
-  }
+      const blockIndex =
+        source.indexOf(block);
 
-  const visibleText = htmlToText(container);
+      const id =
+        findNearbyMessageId(
+          block,
+          source,
+          blockIndex
+        ) ||
+        allIds[i] ||
+        null;
 
-  let from =
-    extractHeaderByLabel(container, 'From') ||
-    extractEmailAfterLabel(visibleText, 'From');
+      const parsed =
+        parseMessageBlock(block, {
+          id,
+          mailboxEmail
+        });
 
-  let to =
-    extractHeaderByLabel(container, 'To') ||
-    extractEmailAfterLabel(visibleText, 'To');
-
-  let subject =
-    extractHeaderByLabel(container, 'Subject');
-
-  if (!subject) {
-    const subjectMatch = visibleText.match(
-      /Subject\s*:?\s*([^\n]+)/i
-    );
-
-    if (subjectMatch) {
-      subject = cleanText(subjectMatch[1]);
+      if (
+        parsed.from ||
+        parsed.subject ||
+        parsed.body ||
+        parsed.html
+      ) {
+        messages.push(parsed);
+      }
     }
   }
 
+  /*
+   * Fallback untuk struktur Generator.email
+   * yang hanya merender satu message detail.
+   */
+  if (messages.length === 0) {
+    const id =
+      state.messageId ||
+      state.messageIdRaw ||
+      allIds[0] ||
+      null;
+
+    const parsed =
+      parseMessageBlock(source, {
+        id,
+        mailboxEmail
+      });
+
+    if (
+      parsed.from ||
+      parsed.subject ||
+      parsed.body ||
+      parsed.html
+    ) {
+      messages.push(parsed);
+    }
+  }
+
+  /*
+   * Remove duplicate message IDs / duplicate content.
+   */
+  const unique = [];
+  const seen = new Set();
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+
+    const key =
+      message.id ||
+      [
+        message.from || '',
+        message.subject || '',
+        message.body || ''
+      ].join('|');
+
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+
+    unique.push({
+      ...message,
+      id: message.id || `message-${i + 1}`
+    });
+  }
+
+  return unique;
+}
+
+function parseMessage(
+  html,
+  state = parseInboxState(html),
+  mailboxEmail = null
+) {
+  if (!state.messageCount) {
+    return {
+      id: null,
+      from: null,
+      to: mailboxEmail || null,
+      subject: null,
+      body: null,
+      html: null,
+      links: []
+    };
+  }
+
+  const messages =
+    parseMessages(
+      html,
+      mailboxEmail
+    );
+
+  if (messages.length) {
+    return messages[0];
+  }
+
   return {
-    id: messageId,
-    from: from || null,
-    to: to || null,
-    subject: subject || null,
-    body: extractMessageBody(container),
-    links: extractLinks(container)
+    id:
+      state.messageId ||
+      state.messageIdRaw ||
+      findMessageIds(html)[0] ||
+      null,
+
+    from: null,
+    to: mailboxEmail || null,
+    subject: null,
+    body: null,
+    html: null,
+    links: []
   };
 }
 
 
-// ============================================================
-// FETCH INBOX
-// ============================================================
+/* ============================================================
+   MESSAGE DETAIL FETCH
+============================================================ */
 
-async function fetchInbox(user, domain, options = {}) {
-  user = normalizeUser(user);
-  domain = normalizeDomain(domain);
+function parseMessageDetail(
+  html,
+  {
+    id = null,
+    mailboxEmail = null,
+    listItem = null
+  } = {}
+) {
+  const parsed =
+    parseMessageBlock(
+      html,
+      {
+        id:
+          id ||
+          listItem?.id ||
+          null,
+        mailboxEmail
+      }
+    );
 
-  if (!user || !domain) {
-    throw new Error('Mailbox tidak valid');
+  return {
+    ...listItem,
+    ...parsed,
+    id:
+      id ||
+      listItem?.id ||
+      parsed.id ||
+      null,
+    from:
+      parsed.from ||
+      listItem?.from ||
+      null,
+    to:
+      parsed.to ||
+      listItem?.to ||
+      mailboxEmail ||
+      null,
+    subject:
+      parsed.subject ||
+      listItem?.subject ||
+      null,
+    time:
+      listItem?.time ||
+      null,
+    links:
+      Array.isArray(parsed.links)
+        ? parsed.links
+        : []
+  };
+}
+
+async function fetchMessageDetail(
+  listItem,
+  {
+    jar,
+    inboxPath,
+    mailboxURL,
+    mailboxEmail
+  }
+) {
+  if (
+    !listItem?.id ||
+    !listItem?.domain ||
+    !listItem?.user
+  ) {
+    return listItem;
   }
 
-  const jar = options.jar || new CookieJar();
+  const messageContext =
+    `${listItem.domain}/${listItem.user}/${listItem.id}`;
+
+  /*
+   * Important:
+   * Generator.email keeps the active tab/message context
+   * in inbox_ctx. Set the full message context before
+   * requesting the message route.
+   */
+  jar.set(
+    'inbox_ctx',
+    encodeURIComponent(messageContext)
+  );
+
+  const detailURL =
+    buildMailboxURL(
+      listItem.user,
+      listItem.domain,
+      listItem.id
+    );
+
+  const attempts = [
+    detailURL,
+    `${GE_BASE}${inboxPath}`
+  ];
+
+  for (const target of attempts) {
+    try {
+      jar.set(
+        'inbox_ctx',
+        encodeURIComponent(messageContext)
+      );
+
+      const response =
+        await request(
+          target,
+          {
+            jar,
+            redirect: 'follow',
+            headers: {
+              Referer:
+                `${GE_BASE}${inboxPath}`
+            }
+          }
+        );
+
+      if (!response.ok) continue;
+
+      const parsed =
+        parseMessageDetail(
+          response.text,
+          {
+            id: listItem.id,
+            mailboxEmail,
+            listItem
+          }
+        );
+
+      if (
+        parsed.body ||
+        parsed.html
+      ) {
+        return parsed;
+      }
+    } catch {
+      // Try the next normal Generator.email route.
+    }
+  }
+
+  return {
+    ...listItem,
+    body:
+      listItem.body ||
+      null,
+    html:
+      listItem.html ||
+      null,
+    links:
+      Array.isArray(listItem.links)
+        ? listItem.links
+        : []
+  };
+}
+
+/* ============================================================
+   GENERATE
+============================================================ */
+
+async function generateMailbox() {
+  const jar = new CookieJar();
+
+  const response =
+    await request(
+      ENDPOINTS.homepage,
+      { jar }
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `Generator.email HTTP ${response.status}`
+    );
+  }
+
+  const mailbox =
+    parseGeneratedMailbox(
+      response.text
+    );
+
+  if (!mailbox) {
+    throw new Error(
+      'Gagal membaca mailbox Generator.email'
+    );
+  }
+
+  return {
+    ...mailbox,
+
+    mailboxUrl:
+      buildMailboxURL(
+        mailbox.user,
+        mailbox.domain
+      )
+  };
+}
+
+/* ============================================================
+   INBOX
+============================================================ */
+
+async function fetchInbox(email) {
+  const {
+    user,
+    domain,
+    email: normalizedEmail
+  } = splitEmail(email);
+
+  const jar = new CookieJar();
+
+  const mailboxContext =
+    `${domain}/${user}`;
 
   jar.set(
     'inbox_ctx',
-    encodeURIComponent(`${domain}/${user}`)
+    encodeURIComponent(mailboxContext)
   );
 
-  const response = await request(ENDPOINTS.inbox, {
-    jar,
-    timeout: options.timeout,
-    headers: {
-      Referer: buildMailboxURL(user, domain)
+  const mailboxURL =
+    buildMailboxURL(
+      user,
+      domain
+    );
+
+  let inboxPath = null;
+
+  try {
+    const opened =
+      await request(
+        mailboxURL,
+        {
+          jar,
+          redirect: 'follow',
+          headers: {
+            Referer: `${GE_BASE}/`
+          }
+        }
+      );
+
+    const match =
+      String(opened.url || '')
+        .match(/\/inbox\d+\//);
+
+    if (match) {
+      inboxPath = match[0];
     }
-  });
+  } catch {
+    // Use fallbacks below.
+  }
+
+  if (!inboxPath) {
+    const candidates = [
+      '/inbox8/',
+      '/inbox7/',
+      '/inbox6/'
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        jar.set(
+          'inbox_ctx',
+          encodeURIComponent(mailboxContext)
+        );
+
+        const test =
+          await request(
+            candidate,
+            {
+              jar,
+              headers: {
+                Referer: mailboxURL
+              }
+            }
+          );
+
+        if (
+          test.ok &&
+          (
+            test.text.includes(user) ||
+            test.text.includes(domain) ||
+            extractJSString(
+              test.text,
+              'cur_user'
+            )
+          )
+        ) {
+          inboxPath = candidate;
+          break;
+        }
+      } catch {
+        // Try next.
+      }
+    }
+  }
+
+  if (!inboxPath) {
+    inboxPath = '/inbox8/';
+  }
+
+  jar.set(
+    'inbox_ctx',
+    encodeURIComponent(mailboxContext)
+  );
+
+  const response =
+    await request(
+      inboxPath,
+      {
+        jar,
+        headers: {
+          Referer: mailboxURL
+        }
+      }
+    );
 
   if (!response.ok) {
     throw new Error(
@@ -1197,101 +1462,404 @@ async function fetchInbox(user, domain, options = {}) {
     );
   }
 
-  const state = parseInboxState(response.text);
+  const state =
+    parseInboxState(
+      response.text
+    );
 
-  const ids = findMessageIds(response.text);
+  let messageList =
+    parseMessageList(
+      response.text,
+      normalizedEmail
+    );
 
-  const message = parseMessage(
-    response.text,
-    state
-  );
+  if (
+    !messageList.length &&
+    state.messageCount > 0
+  ) {
+    const activeId =
+      state.messageId ||
+      state.messageIdRaw ||
+      null;
 
-  return {
-    status: response.status,
+    if (activeId && activeId !== 'page_is_1') {
+      messageList = [
+        {
+          id: activeId,
+          path:
+            `${domain}/${user}/${activeId}`,
+          user,
+          domain,
+          email: normalizedEmail,
+          from: null,
+          to: normalizedEmail,
+          subject: null,
+          time: null,
+          body: null,
+          html: null,
+          links: []
+        }
+      ];
+    }
+  }
 
-    mailbox: {
-      user,
-      domain,
-      email: `${user}@${domain}`,
-      url: buildMailboxURL(user, domain)
-    },
+  const messages = [];
 
-    inbox: {
-      messageCount: state.messageCount,
-      messageId:
-        state.messageId ||
-        state.messageIdRaw ||
-        ids[0] ||
-        null,
-
-      messageIds: ids
-    },
-
-    message,
-
-    state,
-
-    jar,
-
-    html:
-      options.includeHtml
-        ? response.text
-        : undefined
-  };
-}
-
-async function checkEmail(email, options = {}) {
-  const { user, domain } = splitEmail(email);
-
-  return fetchInbox(user, domain, options);
-}
-
-
-// ============================================================
-// POLLING
-// ============================================================
-
-async function waitForMessage(
-  email,
-  {
-    timeout = 60_000,
-    interval = 3_000,
-    requestTimeout = DEFAULT_TIMEOUT,
-    predicate
-  } = {}
-) {
-  const { user, domain } = splitEmail(email);
-
-  const jar = new CookieJar();
-
-  const startedAt = Date.now();
-
-  let lastResult = null;
-
-  while (Date.now() - startedAt < timeout) {
-    try {
-      const result = await fetchInbox(
-        user,
-        domain,
+  for (const item of messageList) {
+    const detail =
+      await fetchMessageDetail(
+        item,
         {
           jar,
-          timeout: requestTimeout
+          inboxPath,
+          mailboxURL,
+          mailboxEmail:
+            normalizedEmail
         }
       );
 
-      lastResult = result;
+    messages.push(detail);
+  }
 
-      if (result.inbox.messageCount > 0) {
-        if (typeof predicate === 'function') {
-          if (await predicate(result.message, result)) {
-            return result;
-          }
-        } else {
-          return result;
+  /*
+   * Restore mailbox-level context after reading
+   * individual messages.
+   */
+  jar.set(
+    'inbox_ctx',
+    encodeURIComponent(mailboxContext)
+  );
+
+  /*
+   * Merge an already-rendered active message if the
+   * main inbox response contains one.
+   */
+  const active =
+    parseMessageDetail(
+      response.text,
+      {
+        id:
+          state.messageId &&
+          state.messageId !== 'page_is_1'
+            ? state.messageId
+            : null,
+        mailboxEmail:
+          normalizedEmail
+      }
+    );
+
+  if (
+    active?.id &&
+    (
+      active.body ||
+      active.html
+    )
+  ) {
+    const index =
+      messages.findIndex(
+        item =>
+          item.id === active.id
+      );
+
+    if (index >= 0) {
+      messages[index] = {
+        ...messages[index],
+        ...active,
+        time:
+          messages[index].time ||
+          active.time
+      };
+    }
+  }
+
+  const unique = [];
+  const seen = new Set();
+
+  for (const message of messages) {
+    if (!message?.id) continue;
+    if (seen.has(message.id)) continue;
+
+    seen.add(message.id);
+    unique.push(message);
+  }
+
+  const firstMessage =
+    unique[0] ||
+    null;
+
+  return {
+    mailbox: {
+      user,
+      domain,
+      email:
+        normalizedEmail,
+      url:
+        mailboxURL
+    },
+
+    inbox: {
+      messageCount:
+        Math.max(
+          state.messageCount,
+          unique.length
+        ),
+
+      messageId:
+        (
+          state.messageId &&
+          state.messageId !== 'page_is_1'
+            ? state.messageId
+            : null
+        ) ||
+        firstMessage?.id ||
+        null,
+
+      messageIds:
+        unique.map(
+          item => item.id
+        )
+    },
+
+    message:
+      firstMessage,
+
+    messages:
+      unique,
+
+    diagnostics: {
+      inboxPath,
+      serverMessageCount:
+        state.messageCount,
+      listMessages:
+        messageList.length,
+      parsedMessages:
+        unique.length,
+      htmlLength:
+        response.text.length
+    }
+  };
+}
+
+/* ============================================================
+   DOMAINS
+============================================================ */
+
+async function getDomains() {
+  const jar = new CookieJar();
+
+  const homepage =
+    await request(
+      ENDPOINTS.homepage,
+      { jar }
+    );
+
+  if (!homepage.ok) {
+    throw new Error(
+      `Homepage HTTP ${homepage.status}`
+    );
+  }
+
+  const apiToken =
+    extractMeta(
+      homepage.text,
+      'api-token'
+    );
+
+  if (!apiToken) {
+    throw new Error(
+      'Generator.email API token tidak ditemukan'
+    );
+  }
+
+  const response =
+    await request(
+      ENDPOINTS.domains,
+      {
+        jar,
+
+        headers: {
+          Accept:
+            'application/json, text/plain, */*',
+
+          'X-API-Token':
+            apiToken,
+
+          'X-Requested-With':
+            'XMLHttpRequest',
+
+          Referer:
+            `${GE_BASE}/`
         }
       }
-    } catch {
-      // transient error -> retry sampai timeout
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `Domains HTTP ${response.status}`
+    );
+  }
+
+  let json;
+
+  try {
+    json =
+      JSON.parse(
+        response.text
+      );
+  } catch {
+    return [];
+  }
+
+  let source = [];
+
+  if (Array.isArray(json)) {
+    source = json;
+  } else if (Array.isArray(json?.domains)) {
+    source = json.domains;
+  } else if (Array.isArray(json?.data)) {
+    source = json.data;
+  } else if (Array.isArray(json?.result)) {
+    source = json.result;
+  }
+
+  const domains = [];
+
+  for (const item of source) {
+    let domain = null;
+
+    if (typeof item === 'string') {
+      domain = item;
+    } else if (
+      item &&
+      typeof item === 'object'
+    ) {
+      domain =
+        item.domain ||
+        item.name ||
+        item.value ||
+        item.host ||
+        null;
+    }
+
+    domain =
+      normalizeDomain(domain);
+
+    if (
+      domain &&
+      /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain) &&
+      !domains.includes(domain)
+    ) {
+      domains.push(domain);
+    }
+  }
+
+  return domains;
+}
+
+/* ============================================================
+   VALIDATE
+============================================================ */
+
+async function validateMailbox(email) {
+  const { user, domain } =
+    splitEmail(email);
+
+  const body =
+    new URLSearchParams({
+      dmn: domain,
+      usr: user
+    }).toString();
+
+  const response =
+    await request(
+      ENDPOINTS.uptime,
+      {
+        method: 'POST',
+
+        headers: {
+          'Content-Type':
+            'application/x-www-form-urlencoded',
+
+          Referer:
+            `${GE_BASE}/`
+        },
+
+        body
+      }
+    );
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    text: response.text
+  };
+}
+
+/* ============================================================
+   PUNYCODE
+============================================================ */
+
+async function domainToPunycode(domain) {
+  const normalized =
+    normalizeDomain(domain);
+
+  const body =
+    new URLSearchParams({
+      dmn: normalized
+    }).toString();
+
+  const response =
+    await request(
+      ENDPOINTS.punycode,
+      {
+        method: 'POST',
+
+        headers: {
+          'Content-Type':
+            'application/x-www-form-urlencoded',
+
+          Referer:
+            `${GE_BASE}/`
+        },
+
+        body
+      }
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `Punycode HTTP ${response.status}`
+    );
+  }
+
+  return response.text.trim();
+}
+
+/* ============================================================
+   POLL
+============================================================ */
+
+async function pollInbox(
+  email,
+  {
+    interval = 3000,
+    timeout = 60000
+  } = {}
+) {
+  const start = Date.now();
+  let lastResult = null;
+
+  while (
+    Date.now() - start < timeout
+  ) {
+    lastResult =
+      await fetchInbox(email);
+
+    if (
+      lastResult?.inbox
+        ?.messageCount > 0
+    ) {
+      return lastResult;
     }
 
     await sleep(interval);
@@ -1300,325 +1868,98 @@ async function waitForMessage(
   return lastResult;
 }
 
+/* ============================================================
+   PARSE INBOX
+============================================================ */
 
-// ============================================================
-// SEARCH ENDPOINT
-// ============================================================
+function parseInbox(
+  html,
+  mailboxEmail = null
+) {
+  const state =
+    parseInboxState(html);
 
-async function search(key, options = {}) {
-  const session =
-    options.session ||
-    await bootstrap({
-      timeout: options.timeout
-    });
+  const ids =
+    findMessageIds(html);
 
-  if (!session.apiToken) {
-    throw new Error(
-      'api-token tidak ditemukan'
+  const messages =
+    parseMessages(
+      html,
+      mailboxEmail
     );
-  }
-
-  const path =
-    `${ENDPOINTS.search}?key=${encodeURIComponent(key)}`;
-
-  const response = await request(path, {
-    jar: session.jar,
-    timeout: options.timeout,
-    headers: {
-      Accept: 'application/json, text/plain, */*',
-      'X-API-Token': session.apiToken,
-      'X-Requested-With': 'XMLHttpRequest',
-      Referer: `${GE_BASE}/`
-    }
-  });
 
   return {
-    ok: response.ok,
-    status: response.status,
-    text: response.text,
-    jar: session.jar
-  };
-}
-
-
-// ============================================================
-// WEBSOCKET INFO
-// ============================================================
-
-function getWebSocketURL(email) {
-  return (
-    'wss://generator.email' +
-    ENDPOINTS.websocket +
-    '?email=' +
-    encodeURIComponent(email)
-  );
-}
-
-
-// ============================================================
-// DIAGNOSTICS
-// ============================================================
-
-function inspectHTML(html) {
-  const state = parseInboxState(html);
-
-  const messageIds = findMessageIds(html);
-
-  return {
-    length: String(html).length,
-
-    apiTokenFound:
-      Boolean(extractMeta(html, 'api-token')),
-
     state,
 
-    messageIds,
+    inbox: {
+      messageCount:
+        state.messageCount,
 
-    messageCount:
-      state.messageCount,
+      messageId:
+        state.messageId ||
+        state.messageIdRaw ||
+        ids[0] ||
+        null,
 
-    currentMessageId:
-      state.messageId ||
-      state.messageIdRaw ||
-      messageIds[0] ||
-      null,
+      messageIds:
+        ids
+    },
 
-    hasMailSource:
-      /\bclass\s*=\s*["'][^"']*\bmailsrc\b/i.test(
-        String(html)
-      ),
+    message:
+      messages[0] || null,
 
-    hasDataMid:
-      /\bdata-mid\s*=/i.test(String(html)),
-
-    endpoints: {
-      domains:
-        String(html).includes('/api/domains.php'),
-
-      uptime:
-        String(html).includes('/uptime.php'),
-
-      markRemove:
-        String(html).includes('/mark_remove.php'),
-
-      punycode:
-        String(html).includes('/dom_to_punycode.php'),
-
-      search:
-        String(html).includes('/search.php'),
-
-      websocket:
-        String(html).includes('/notificon/ws')
-    }
+    messages
   };
 }
 
-
-// ============================================================
-// HIGH-LEVEL PROVIDER
-// ============================================================
-
-class GeneratorEmail {
-  constructor(options = {}) {
-    this.timeout =
-      options.timeout || DEFAULT_TIMEOUT;
-
-    this.jar =
-      options.jar || new CookieJar();
-
-    this.apiToken = null;
-  }
-
-  async bootstrap() {
-    const result = await bootstrap({
-      jar: this.jar,
-      timeout: this.timeout
-    });
-
-    this.apiToken = result.apiToken;
-
-    return result;
-  }
-
-  async domains() {
-    let session;
-
-    if (this.apiToken) {
-      session = {
-        apiToken: this.apiToken,
-        jar: this.jar
-      };
-    } else {
-      session = await this.bootstrap();
-    }
-
-    const result = await getDomains({
-      session,
-      timeout: this.timeout
-    });
-
-    return result.domains;
-  }
-
-  async generate() {
-    const result = await generateMailbox({
-      jar: this.jar,
-      timeout: this.timeout
-    });
-
-    if (result.apiToken) {
-      this.apiToken = result.apiToken;
-    }
-
-    return result;
-  }
-
-  async open(email) {
-    const { user, domain } = splitEmail(email);
-
-    return openMailbox(
-      user,
-      domain,
-      {
-        jar: this.jar,
-        timeout: this.timeout
-      }
-    );
-  }
-
-  async inbox(email, options = {}) {
-    const { user, domain } = splitEmail(email);
-
-    return fetchInbox(
-      user,
-      domain,
-      {
-        jar: this.jar,
-        timeout:
-          options.timeout || this.timeout,
-
-        includeHtml:
-          Boolean(options.includeHtml)
-      }
-    );
-  }
-
-  async wait(email, options = {}) {
-    const { user, domain } = splitEmail(email);
-
-    const startedAt = Date.now();
-
-    const timeout =
-      options.timeout ?? 60_000;
-
-    const interval =
-      options.interval ?? 3_000;
-
-    let lastResult = null;
-
-    while (Date.now() - startedAt < timeout) {
-      try {
-        const result = await fetchInbox(
-          user,
-          domain,
-          {
-            jar: this.jar,
-            timeout:
-              options.requestTimeout ||
-              this.timeout
-          }
-        );
-
-        lastResult = result;
-
-        if (result.inbox.messageCount > 0) {
-          if (
-            typeof options.predicate ===
-            'function'
-          ) {
-            const accepted =
-              await options.predicate(
-                result.message,
-                result
-              );
-
-            if (accepted) return result;
-          } else {
-            return result;
-          }
-        }
-      } catch {
-        // retry
-      }
-
-      await sleep(interval);
-    }
-
-    return lastResult;
-  }
-
-  async uptime(email) {
-    const { user, domain } = splitEmail(email);
-
-    return checkUptime(
-      user,
-      domain,
-      {
-        jar: this.jar,
-        timeout: this.timeout
-      }
-    );
-  }
-
-  websocketURL(email) {
-    return getWebSocketURL(email);
-  }
-}
-
-
-// ============================================================
-// EXPORTS
-// ============================================================
+/* ============================================================
+   EXPORT
+============================================================ */
 
 module.exports = {
-  GeneratorEmail,
-  CookieJar,
-
   GE_BASE,
   ENDPOINTS,
+  DEFAULT_TIMEOUT,
 
-  bootstrap,
-  getDomains,
   generateMailbox,
-  openMailbox,
   fetchInbox,
-  checkEmail,
-  waitForMessage,
-
+  pollInbox,
+  getDomains,
+  validateMailbox,
   domainToPunycode,
-  markMailbox,
-  checkUptime,
-  search,
 
-  parseBootstrap,
   parseGeneratedMailbox,
   parseInboxState,
+  parseInbox,
   parseMessage,
-  findMessageIds,
-  findMessageContainer,
-  extractLinks,
-  inspectHTML,
+  parseMessages,
+  parseMessageList,
+  parseMessageDetail,
 
-  splitEmail,
-  buildEmail,
-  buildMailboxURL,
-  buildInboxCookie,
-  getWebSocketURL,
+  extractActualFrom,
+  extractActualTo,
+  extractActualSubject,
+  extractActualBody,
+  extractMessageBodyHTML,
+
+  extractLinks,
+  sanitizeEmailHtml,
+
+  findMessageIds,
+  findMessageBlocks,
+
+  extractDivInnerHTMLByClass,
+  extractDivInnerHTMLById,
+  extractClassContent,
 
   htmlToText,
-  cleanText,
   decodeHtml,
+  cleanText,
 
-  randomUsername,
+  buildMailboxURL,
+  splitEmail,
+  normalizeUser,
+  normalizeDomain,
+
   sleep
 };
