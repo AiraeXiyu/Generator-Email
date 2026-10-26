@@ -1,3 +1,15 @@
+/**
+ * XIYU GENERATOR EMAIL
+ *
+ * Developer : EMISSARY XIYU
+ * Scraper   : EMISSARY XIYU
+ * Version   : 1.0.0
+ * Engine    : Generator.email
+ * Type      : Standalone Scraper
+ * File      : xiyu.js
+ * Status    : Public Release
+ */
+
 const GE_BASE = 'https://generator.email';
 const DEFAULT_TIMEOUT = 15000;
 
